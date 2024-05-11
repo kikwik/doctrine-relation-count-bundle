@@ -1,0 +1,7 @@
+LOCAL_PHP=php8.1
+
+DANGER='\033[0;31m'
+SUCCESS='\033[0;32m'
+INFO='\033[0;33m'
+CMD='\033[0;34m'
+NC='\033[0m'
