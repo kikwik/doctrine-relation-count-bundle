@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<container xmlns="http://symfony.com/schema/dic/services"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:schemaLocation="http://symfony.com/schema/dic/services
+        http://symfony.com/schema/dic/services/services-1.0.xsd">
+    <services>
+        <!-- EventListener\RelationCounterUpdater -->
+        <service id="kikwik_doctrine_relation_count.event_listener.relation_counter_updater" class="Kikwik\DoctrineRelationCountBundle\EventListener\RelationCounterListener" public="true">
+            <argument type="service" id="doctrine"/>
+            <tag name="doctrine.event_listener" event="prePersist"/>
+            <tag name="doctrine.event_listener" event="postPersist"/>
+            <tag name="doctrine.event_listener" event="preUpdate"/>
+            <tag name="doctrine.event_listener" event="postUpdate"/>
+            <tag name="doctrine.event_listener" event="preRemove"/>
+            <tag name="doctrine.event_listener" event="postRemove"/>
+        </service>
+
+    </services>
+</container>
