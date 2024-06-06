@@ -167,13 +167,17 @@ class RelationCounterListener
         $fieldsWithCountableRelation = [];
         foreach ($classMetadata->associationMappings as $fieldName => $mapping)
         {
-            if ($mapping['type'] === ClassMetadata::MANY_TO_ONE || $mapping['type'] === ClassMetadata::MANY_TO_MANY)
+            $reflectionProperty = $reflectionClass->getProperty($fieldName);
+            $countableAttributes = $reflectionProperty->getAttributes(CountableRelation::class);
+            if(count($countableAttributes))
             {
-                $reflectionProperty = $reflectionClass->getProperty($fieldName);
-                $countableAttributes = $reflectionProperty->getAttributes(CountableRelation::class);
-                if(count($countableAttributes))
+                if ($mapping['type'] === ClassMetadata::MANY_TO_ONE )   // || $mapping['type'] === ClassMetadata::MANY_TO_MANY
                 {
                     $fieldsWithCountableRelation[] = $fieldName;
+                }
+                else
+                {
+                    throw new \Exception(sprintf('Found a #[CountableRelation] attribute on property "%s" in "%s". CountableRelation supports ManyToOne', $fieldName, get_class($object)));
                 }
             }
         }
