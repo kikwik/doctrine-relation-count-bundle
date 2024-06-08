@@ -3,13 +3,10 @@
 namespace Kikwik\DoctrineRelationCountBundle\EventListener;
 
 use Doctrine\Bundle\DoctrineBundle\Registry;
+use Doctrine\ORM\Event\OnFlushEventArgs;
 use Doctrine\ORM\Event\PostFlushEventArgs;
-use Doctrine\ORM\Event\PostPersistEventArgs;
-use Doctrine\ORM\Event\PostRemoveEventArgs;
-use Doctrine\ORM\Event\PostUpdateEventArgs;
 use Doctrine\ORM\Event\PrePersistEventArgs;
 use Doctrine\ORM\Event\PreRemoveEventArgs;
-use Doctrine\ORM\Event\PreUpdateEventArgs;
 use Doctrine\ORM\Mapping\ClassMetadata;
 use Kikwik\DoctrineRelationCountBundle\Attribute\CountableEntity;
 use Kikwik\DoctrineRelationCountBundle\Attribute\CountableRelation;
@@ -18,25 +15,27 @@ use Symfony\Component\PropertyAccess\PropertyAccess;
 class RelationCounterListener
 {
     public function __construct(
-        private Registry $doctrine
+        private readonly Registry $doctrine
     )
     {
     }
 
     public function prePersist(PrePersistEventArgs $eventArgs)      {$this->saveActualValues($eventArgs);}
-    public function preUpdate(PreUpdateEventArgs $eventArgs)        {$this->saveChangedValues($eventArgs);}
     public function preRemove(PreRemoveEventArgs $eventArgs)        {$this->saveActualValues($eventArgs);}
-    public function postFlush(PostFlushEventArgs $eventArgs)      {$this->updateCounters();}
+    public function onFlush(OnFlushEventArgs $eventArgs)            {$this->saveChangedValues($eventArgs);}
+    public function postFlush(PostFlushEventArgs $eventArgs)        {$this->updateCounters();}
 
     /**
-     * PrePersist and PreRemove - get the current value for all the CountableRelation objetcs
+     * PrePersist and PreRemove - get the current value for all the CountableRelation objects
      *
      * @param mixed $eventArgs
      * @return void
+     * @throws \ReflectionException
      */
-    private function saveActualValues(mixed $eventArgs)
+    private function saveActualValues(mixed $eventArgs): void
     {
-        if($localObject = $this->getEntityIfSupported($eventArgs))
+        $localObject = $eventArgs->getObject();
+        if($this->isEntitySupported($localObject))
         {
             $propertyAccessor = PropertyAccess::createPropertyAccessor();
             $relationNames = $this->getCountableRelations($localObject);
@@ -48,55 +47,125 @@ class RelationCounterListener
     }
 
     /**
-     * PreUpdate - get the old and new value for the changed CountableRelation objects
+     * onFlush - get the old and new values for the changed CountableRelation objects
      *
-     * @param PreUpdateEventArgs $eventArgs
+     * @param OnFlushEventArgs $eventArgs
      * @return void
+     * @throws \ReflectionException
      */
-    private function saveChangedValues(PreUpdateEventArgs $eventArgs)
+    public function saveChangedValues(OnFlushEventArgs $eventArgs): void
     {
-        if($localObject = $this->getEntityIfSupported($eventArgs))
+        $em = $eventArgs->getObjectManager();
+        $uow = $em->getUnitOfWork();
+
+        foreach ($uow->getScheduledEntityUpdates() as $localObject)
         {
-            $relationNames = $this->getCountableRelations($localObject);
-            foreach($relationNames as $relationName)
+            if ($this->isEntitySupported($localObject))
             {
-                if($eventArgs->hasChangedField($relationName))
+                $relationNames = $this->getCountableRelations($localObject);
+
+                // check for ManyToOne relations
+                $changeset = $uow->getEntityChangeSet($localObject);
+                foreach($relationNames as $relationName)
                 {
-                    $this->addObjectToUpdate($localObject, $relationName, $eventArgs->getOldValue($relationName));
-                    $this->addObjectToUpdate($localObject, $relationName, $eventArgs->getNewValue($relationName));
+                    if(isset($changeset[$relationName]))
+                    {
+                        foreach($changeset[$relationName] as $relatedObject)
+                        {
+                            $this->addObjectToUpdate($localObject, $relationName, $relatedObject);
+                        }
+                    }
                 }
+
+                // check for ManyToMany relations
+                foreach ($uow->getScheduledCollectionUpdates() as $collectionUpdate)
+                {
+                    $relationName = $collectionUpdate->getMapping()['fieldName'];
+                    if ($this->isEntitySupported($collectionUpdate->getOwner()) && in_array($relationName, $relationNames))
+                    {
+                        $oldRelatedObjects = $collectionUpdate->getSnapshot();
+                        $newRelatedObjects = $collectionUpdate->toArray();
+
+                        // Elements that have been removed or added
+                        $removedObjects = array_diff($oldRelatedObjects, $newRelatedObjects);
+                        $addedObjects = array_diff($newRelatedObjects, $oldRelatedObjects);
+
+                        // Merge arrays and remove duplicates
+                        $changedObjects = array_unique(array_merge($removedObjects, $addedObjects));
+
+                        $this->addObjectToUpdate($localObject, $relationName, $changedObjects);
+                    }
+                }
+
             }
         }
     }
 
+
     /**
-     * PostPersist, PostUpdate and PostRemove - Call the updateNumProdotti repository method for all the changed objects
+     * postFlush - Call the updateCountableRelation method in the related repository
+     *              or run the update cunters query
      *
      * @return void
      */
-    private function updateCounters()
+    private function updateCounters(): void
     {
         foreach($this->objectsToUpdate as $objectData)
         {
             $localObject = $objectData['localObject'];
-            $relatedObject = $objectData['relatedObject'];
-            if($relatedObject)
+            if(is_iterable($objectData['relatedObject']))
             {
-                $relatedRepository = $this->doctrine->getManager()->getRepository(get_class($relatedObject));
-                if(method_exists($relatedRepository, 'updateCountableRelation')) {
-                    // Call updateCountableRelation method
-                    $relatedRepository->updateCountableRelation($localObject, $objectData['relationName'], $relatedObject, $objectData['relatedProperty']);
-                } else {
-                    // Method updateCountableRelation does not exist
-                    $dql = sprintf('UPDATE %s related set related.%s = (SELECT COUNT(local.id) FROM %s local WHERE local.%s = :id) WHERE related.id = :id',
-                        get_class($relatedObject),
-                        $objectData['relatedProperty'],
-                        get_class($localObject),
-                        $objectData['relationName'],
-                    );
-                    $query = $this->doctrine->getManager()->createQuery($dql)
-                        ->setParameter('id', $relatedObject->getId());
-                    $query->execute();
+                // collection, relation is ManyToMany
+                $relatedObjects = $objectData['relatedObject'];
+                foreach($relatedObjects as $relatedObject)
+                {
+                    $relatedRepository = $this->doctrine->getManager()->getRepository(get_class($relatedObject));
+                    if(method_exists($relatedRepository, 'updateCountableRelation')) {
+                        // Call updateCountableRelation method
+                        $relatedRepository->updateCountableRelation($localObject, $objectData['relationName'], $relatedObject, $objectData['relatedProperty']);
+                    } else {
+                        // Method updateCountableRelation does not exist
+                        $countDql = sprintf('SELECT COUNT(local.id) FROM %s local LEFT JOIN local.%s related WHERE related.id = :id',
+                            get_class($localObject),
+                            $objectData['relationName'],
+                        );
+                        $countQuery = $this->doctrine->getManager()->createQuery($countDql)
+                            ->setParameter('id', $relatedObject->getId());
+                        $count = $countQuery->getSingleScalarResult();
+
+                        $updateDql = sprintf('UPDATE %s related set related.%s = :count WHERE related.id = :id',
+                            get_class($relatedObject),
+                            $objectData['relatedProperty'],
+                        );
+                        $updateQuery = $this->doctrine->getManager()->createQuery($updateDql)
+                            ->setParameter('id', $relatedObject->getId())
+                            ->setParameter('count', $count);
+                        $updateQuery->execute();
+                    }
+                }
+            }
+            else
+            {
+                // object, relation is ManyToOne
+                $relatedObject = $objectData['relatedObject'];
+                if($relatedObject)
+                {
+                    $relatedRepository = $this->doctrine->getManager()->getRepository(get_class($relatedObject));
+                    if(method_exists($relatedRepository, 'updateCountableRelation')) {
+                        // Call updateCountableRelation method
+                        $relatedRepository->updateCountableRelation($localObject, $objectData['relationName'], $relatedObject, $objectData['relatedProperty']);
+                    } else {
+                        // Method updateCountableRelation does not exist
+                        $dql = sprintf('UPDATE %s related set related.%s = (SELECT COUNT(local.id) FROM %s local WHERE local.%s = :id) WHERE related.id = :id',
+                            get_class($relatedObject),
+                            $objectData['relatedProperty'],
+                            get_class($localObject),
+                            $objectData['relationName'],
+                        );
+                        $query = $this->doctrine->getManager()->createQuery($dql)
+                            ->setParameter('id', $relatedObject->getId());
+                        $query->execute();
+                    }
                 }
             }
         }
@@ -104,7 +173,7 @@ class RelationCounterListener
         $this->objectsToUpdate = [];
     }
 
-    private $objectsToUpdate = [];
+    private array $objectsToUpdate = [];
 
     /**
      * Adds an object to the update queue for countable relations.
@@ -115,7 +184,7 @@ class RelationCounterListener
      * @return void
      * @throws \Exception If the targetProperty is not defined in the #[CountableRelation] attribute.
      */
-    private function addObjectToUpdate(mixed $localObject, string $relationName, mixed $relatedObject)
+    private function addObjectToUpdate(mixed $localObject, string $relationName, mixed $relatedObject): void
     {
         $reflectionClass = new \ReflectionClass($localObject);
         $reflectionProperty = $reflectionClass->getProperty($relationName);
@@ -137,20 +206,15 @@ class RelationCounterListener
     }
 
     /**
-     * Retrieves the entity if it is supported (has the CountableEntity attribute)
+     * Check if the entity is supported (has the CountableEntity attribute)
      *
-     * @param mixed $eventArgs The event arguments
-     * @return object|null The entity if it is supported, null otherwise
+     * @param object $entity
+     * @return bool
      */
-    private function getEntityIfSupported($eventArgs): ?object
+    private function isEntitySupported(object $entity): bool
     {
-        $entity = $eventArgs->getObject();
         $reflectionClass = new \ReflectionClass(get_class($entity));
-        if ($reflectionClass->getAttributes(CountableEntity::class))
-        {
-            return $entity;
-        }
-        return null;
+        return (bool)count($reflectionClass->getAttributes(CountableEntity::class));
     }
 
     /**
@@ -158,6 +222,8 @@ class RelationCounterListener
      *
      * @param mixed $object The object to check for countable relations.
      * @return array An array of field names with countable relations.
+     * @throws \ReflectionException
+     * @throws \Exception If the #[CountableRelation] is associated with a non ManyToOne or ManyToMany relation.
      */
     private function getCountableRelations(mixed $object): array
     {
@@ -176,7 +242,7 @@ class RelationCounterListener
                 }
                 else
                 {
-                    throw new \Exception(sprintf('Found a #[CountableRelation] attribute on property "%s" in "%s". CountableRelation supports ManyToOne or ManyToMany', $fieldName, get_class($object)));
+                    throw new \Exception(sprintf('Unsupported relation type in attribute #[CountableRelation] for %s::%s. CountableRelation supports only ManyToOne or ManyToMany', $fieldName, get_class($object)));
                 }
             }
         }
