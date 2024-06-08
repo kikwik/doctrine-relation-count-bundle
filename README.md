@@ -14,7 +14,7 @@ composer require kikwik/doctrine-relation-count-bundle
 
 ## Usage
 
-* Add an integer field in the related class wich will contain the count value
+* Add an integer field in the related classes wich will contain the count value, setter is not required.
 
 ```php
 
@@ -29,11 +29,25 @@ class Famiglia
         return $this->numProdotti;
     }
 }
+```
 
+```php
+
+#[ORM\Entity(repositoryClass: SimboloRepository::class)]
+class Simbolo
+{
+    #[ORM\Column]
+    private int $numProdotti = 0;
+
+    public function getNumProdotti(): int
+    {
+        return $this->numProdotti;
+    }
+}
 ```
 
 * Add the `#[CountableEntity]` attribute on top of your child class  
-* Add the `#[CountableRelation]` attribute on the ManyToOne relations which you would count
+* Add the `#[CountableRelation]` attribute on the ManyToOne or ManyToMany relations which you would count
 * Set the `targetProperty` parameter to the count property in the related class
 
 ```php
@@ -49,12 +63,16 @@ class Prodotto
     #[CountableRelation(targetProperty: 'numProdotti')]
     private ?Famiglia $famiglia = null;
 
+    #[ORM\ManyToMany(targetEntity: Simbolo::class, inversedBy: 'prodotti')]
+    #[CountableRelation(targetProperty: 'numProdotti')]
+    private Collection $simboli;
 }
 ```
 
 ## Custom updater
 
-If you need to use a customized query for the counter update you can define a `updateCountableRelation` method in your child repository
+If you need to use a customized query for the counter update you can define a `updateCountableRelation` 
+method in your child repository
 
 ```php
 
@@ -74,5 +92,4 @@ class ProdottoRepository extends ServiceEntityRepository
         $query->execute();
     }
 }
-
 ```
