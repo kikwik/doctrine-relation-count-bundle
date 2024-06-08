@@ -3,6 +3,7 @@
 namespace Kikwik\DoctrineRelationCountBundle\EventListener;
 
 use Doctrine\Bundle\DoctrineBundle\Registry;
+use Doctrine\ORM\Event\PostFlushEventArgs;
 use Doctrine\ORM\Event\PostPersistEventArgs;
 use Doctrine\ORM\Event\PostRemoveEventArgs;
 use Doctrine\ORM\Event\PostUpdateEventArgs;
@@ -23,11 +24,9 @@ class RelationCounterListener
     }
 
     public function prePersist(PrePersistEventArgs $eventArgs)      {$this->saveActualValues($eventArgs);}
-    public function postPersist(PostPersistEventArgs $eventArgs)    {$this->updateCounters($eventArgs);}
     public function preUpdate(PreUpdateEventArgs $eventArgs)        {$this->saveChangedValues($eventArgs);}
-    public function postUpdate(PostUpdateEventArgs $eventArgs)      {$this->updateCounters($eventArgs);}
     public function preRemove(PreRemoveEventArgs $eventArgs)        {$this->saveActualValues($eventArgs);}
-    public function postRemove(PostRemoveEventArgs $eventArgs)      {$this->updateCounters($eventArgs);}
+    public function postFlush(PostFlushEventArgs $eventArgs)      {$this->updateCounters();}
 
     /**
      * PrePersist and PreRemove - get the current value for all the CountableRelation objetcs
@@ -75,7 +74,7 @@ class RelationCounterListener
      *
      * @return void
      */
-    private function updateCounters(mixed $eventArgs)
+    private function updateCounters()
     {
         foreach($this->objectsToUpdate as $objectData)
         {
@@ -171,13 +170,13 @@ class RelationCounterListener
             $countableAttributes = $reflectionProperty->getAttributes(CountableRelation::class);
             if(count($countableAttributes))
             {
-                if ($mapping['type'] === ClassMetadata::MANY_TO_ONE )   // || $mapping['type'] === ClassMetadata::MANY_TO_MANY
+                if ($mapping['type'] === ClassMetadata::MANY_TO_ONE || $mapping['type'] === ClassMetadata::MANY_TO_MANY)
                 {
                     $fieldsWithCountableRelation[] = $fieldName;
                 }
                 else
                 {
-                    throw new \Exception(sprintf('Found a #[CountableRelation] attribute on property "%s" in "%s". CountableRelation supports ManyToOne', $fieldName, get_class($object)));
+                    throw new \Exception(sprintf('Found a #[CountableRelation] attribute on property "%s" in "%s". CountableRelation supports ManyToOne or ManyToMany', $fieldName, get_class($object)));
                 }
             }
         }
